@@ -173,7 +173,7 @@ GROUP BY day, model ORDER BY day DESC
 ## Development
 
 ```bash
-git clone https://github.com/louthenw/claude-code-to-sqlite
+git clone https://github.com/hockinghills/claude-code-to-sqlite
 cd claude-code-to-sqlite
 pip install -e ".[test]"
 pytest

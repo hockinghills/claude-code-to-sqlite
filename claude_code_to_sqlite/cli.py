@@ -187,7 +187,7 @@ def web_export(db_path, zip_path, silent):
     message_count = 0
     errors = []
 
-    for i, conv in enumerate(conversations):
+    for conv in conversations:
         try:
             session_row, message_rows = utils.process_web_conversation(conv)
             if session_row:
@@ -226,8 +226,14 @@ def stats(db_path):
     if "sessions" not in db.table_names():
         raise click.ClickException("No sessions table found in database")
 
+    table_names = db.table_names()
+    has_messages = "messages" in table_names
+
     session_count = db.execute("SELECT count(*) FROM sessions").fetchone()[0]
-    message_count = db.execute("SELECT count(*) FROM messages").fetchone()[0]
+    message_count = (
+        db.execute("SELECT count(*) FROM messages").fetchone()[0]
+        if has_messages else 0
+    )
     total_tokens = db.execute(
         "SELECT coalesce(sum(total_tokens), 0) FROM sessions"
     ).fetchone()[0]
@@ -241,17 +247,20 @@ def stats(db_path):
         "SELECT project, count(*) as c FROM sessions GROUP BY project ORDER BY c DESC LIMIT 10"
     ).fetchall()
     if projects:
-        click.echo(f"\nTop projects:")
+        click.echo("\nTop projects:")
         for project, count in projects:
             click.echo(f"  {count:>5}  {project}")
 
     # Models
-    models = db.execute(
-        "SELECT model, count(*) as c FROM messages WHERE model IS NOT NULL "
-        "GROUP BY model ORDER BY c DESC LIMIT 10"
-    ).fetchall()
+    if has_messages:
+        models = db.execute(
+            "SELECT model, count(*) as c FROM messages WHERE model IS NOT NULL "
+            "GROUP BY model ORDER BY c DESC LIMIT 10"
+        ).fetchall()
+    else:
+        models = []
     if models:
-        click.echo(f"\nTop models:")
+        click.echo("\nTop models:")
         for model, count in models:
             click.echo(f"  {count:>7}  {model}")
 

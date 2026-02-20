@@ -250,12 +250,12 @@ def dir_to_project(dirname):
 
     Claude Code encodes absolute paths by replacing / with -
     and stripping the leading /. For example:
-        -home-user-my-project -> /home/user/my-project
+        -home-user-project -> /home/user/project
 
-    Since hyphens are ambiguous (path separator vs literal hyphen),
-    we reconstruct by replacing the leading - with / and subsequent
-    - with /. This matches Claude Code's encoding convention where
-    directory names starting with - indicate absolute paths.
+    Hyphens are ambiguous (path separator vs literal hyphen in
+    directory names), so this is a best-effort reconstruction.
+    Directory names without a leading - are returned unchanged,
+    preserving names like "my-cool-project".
     """
     if dirname.startswith("-"):
         # Absolute path encoding: -home-user-project -> /home/user/project
@@ -466,7 +466,6 @@ def process_web_conversation(conversation):
 
     message_rows = []
     timestamps = []
-    models = set()
 
     for msg_index, msg in enumerate(chat_messages):
         sender = msg.get("sender", "unknown")

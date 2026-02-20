@@ -47,25 +47,6 @@ claude-code-to-sqlite session claude.db path/to/session.jsonl --project myapp
 claude-code-to-sqlite stats claude.db
 ```
 
-Output:
-
-```
-Sessions:  2,171
-Messages:  292,323
-Tokens:    17,893,182
-
-Top projects:
-    702  /projects
-    392  //home/user
-     84  //home/user/apps
-
-Top models:
-  44720  claude-opus-4-5-20251101
-  42337  claude-sonnet-4-5-20250929
-
-Date range: 2025-04-19 to 2026-02-17
-```
-
 ### Explore with Datasette
 
 ```bash

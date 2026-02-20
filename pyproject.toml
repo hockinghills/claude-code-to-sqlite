@@ -15,8 +15,8 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project.urls]
-Homepage = "https://github.com/louthenw/claude-code-to-sqlite"
-Issues = "https://github.com/louthenw/claude-code-to-sqlite/issues"
+Homepage = "https://github.com/hockinghills/claude-code-to-sqlite"
+Issues = "https://github.com/hockinghills/claude-code-to-sqlite/issues"
 
 [project.scripts]
 claude-code-to-sqlite = "claude_code_to_sqlite.cli:cli"

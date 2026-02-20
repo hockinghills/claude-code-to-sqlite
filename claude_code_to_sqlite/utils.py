@@ -8,22 +8,28 @@ Handles:
   - ZIP (claude.ai web export: conversations.json)
 """
 import json
+import logging
 import re
 import zipfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Max uncompressed size we'll load from a ZIP (500 MB)
+MAX_ZIP_ENTRY_BYTES = 500 * 1024 * 1024
 
 
 # --- File filtering ---
 
 SKIP_PATTERNS = [
-    re.compile(r"/subagents?/"),
-    re.compile(r"/processing/"),
+    re.compile(r"[\\/](?:subagents?)[\\/]"),
+    re.compile(r"[\\/]processing[\\/]"),
 ]
 
 
 def should_skip_file(filepath, include_agents=False):
     """Return True if this file should not be ingested."""
-    s = str(filepath)
+    s = filepath.as_posix()
     for pat in SKIP_PATTERNS:
         if pat.search(s):
             return True
@@ -35,6 +41,12 @@ def should_skip_file(filepath, include_agents=False):
     if " copy" in name or "(1)" in name:
         return True
     if name.startswith("pre-surgery-") or name.startswith("surgery-backup-"):
+        return True
+    # Skip Claude Code metadata files that aren't session transcripts
+    if name in ("sessions-index.json", "timeline.json"):
+        return True
+    # Skip files inside .timelines directories
+    if ".timelines" in filepath.as_posix():
         return True
     return False
 
@@ -74,7 +86,11 @@ def _extract_records_from_bad_line(line):
 
 
 def load_session_file(filepath):
-    """Load a session file (JSONL or JSON) and return a list of records."""
+    """Load a session file (JSONL or JSON) and return a list of records.
+
+    Handles corrupted JSONL lines by attempting to extract valid JSON
+    fragments. Logs warnings for recovered and unrecoverable lines.
+    """
     filepath = Path(filepath)
 
     if filepath.suffix == ".json":
@@ -90,8 +106,9 @@ def load_session_file(filepath):
     # JSONL format (CLI sessions)
     records = []
     recovered = 0
+    unrecoverable = 0
     with open(filepath, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
@@ -102,26 +119,47 @@ def load_session_file(filepath):
                 if extracted:
                     records.extend(extracted)
                     recovered += len(extracted)
+                else:
+                    unrecoverable += 1
+                    logger.warning(
+                        "%s line %d: unrecoverable JSON parse error",
+                        filepath.name, line_num,
+                    )
+    if recovered:
+        logger.info(
+            "%s: recovered %d records from corrupted lines",
+            filepath.name, recovered,
+        )
+    if unrecoverable:
+        logger.warning(
+            "%s: %d unrecoverable lines skipped",
+            filepath.name, unrecoverable,
+        )
     return records
 
 
 # --- Content extraction ---
 
+def _base64_decoded_size_kb(encoded_len):
+    """Estimate decoded size in KB from base64 encoded character count."""
+    return (encoded_len * 3 / 4) / 1024
+
+
 def replace_base64_content(content):
     """Replace base64 image/document data with a size placeholder."""
     if isinstance(content, str):
         if "base64" in content[:500] and len(content) > 1000:
-            size_kb = len(content) / 1024
-            return f"[base64 content, {size_kb:.0f}KB]"
+            size_kb = _base64_decoded_size_kb(len(content))
+            return f"[base64 content, ~{size_kb:.0f}KB decoded]"
         return content
     if isinstance(content, dict):
         source = content.get("source", {})
         if source.get("type") == "base64":
             data = source.get("data", "")
-            size_kb = len(data) / 1024
+            size_kb = _base64_decoded_size_kb(len(data))
             media = source.get("media_type", "unknown")
             ctype = content.get("type", "file")
-            return f"[{ctype}: {media}, {size_kb:.0f}KB]"
+            return f"[{ctype}: {media}, ~{size_kb:.0f}KB decoded]"
         return str(content)
     if isinstance(content, list):
         parts = []
@@ -130,10 +168,10 @@ def replace_base64_content(content):
                 source = item.get("source", {})
                 if source.get("type") == "base64":
                     data = source.get("data", "")
-                    size_kb = len(data) / 1024
+                    size_kb = _base64_decoded_size_kb(len(data))
                     media = source.get("media_type", "unknown")
                     ctype = item.get("type", "file")
-                    parts.append(f"[{ctype}: {media}, {size_kb:.0f}KB]")
+                    parts.append(f"[{ctype}: {media}, ~{size_kb:.0f}KB decoded]")
                 elif item.get("type") == "text":
                     parts.append(item.get("text", ""))
                 else:
@@ -208,8 +246,22 @@ def extract_tool_calls(raw_content):
 
 
 def dir_to_project(dirname):
-    """Convert encoded directory name back to a path."""
-    return "/" + dirname.replace("-", "/")
+    """Convert encoded directory name back to a path.
+
+    Claude Code encodes absolute paths by replacing / with -
+    and stripping the leading /. For example:
+        -home-user-my-project -> /home/user/my-project
+
+    Since hyphens are ambiguous (path separator vs literal hyphen),
+    we reconstruct by replacing the leading - with / and subsequent
+    - with /. This matches Claude Code's encoding convention where
+    directory names starting with - indicate absolute paths.
+    """
+    if dirname.startswith("-"):
+        # Absolute path encoding: -home-user-project -> /home/user/project
+        return "/" + dirname[1:].replace("-", "/")
+    else:
+        return dirname
 
 
 # --- Session processing ---
@@ -364,11 +416,36 @@ def load_web_export(zip_path):
     The ZIP contains conversations.json — an array of conversation objects,
     each with chat_messages using sender/text/content fields.
 
+    Validates the ZIP structure and enforces a size limit to prevent
+    decompression attacks.
+
     Returns a list of conversation dicts.
     """
     zip_path = Path(zip_path)
     with zipfile.ZipFile(zip_path) as zf:
-        with zf.open("conversations.json") as f:
+        # Search for conversations.json anywhere in the archive
+        conversations_path = None
+        for info in zf.infolist():
+            if info.filename.endswith("conversations.json"):
+                conversations_path = info
+                break
+
+        if conversations_path is None:
+            raise ValueError(
+                f"No conversations.json found in {zip_path.name}. "
+                "Expected a claude.ai data export ZIP."
+            )
+
+        # Check uncompressed size before loading
+        if conversations_path.file_size > MAX_ZIP_ENTRY_BYTES:
+            size_mb = conversations_path.file_size / (1024 * 1024)
+            limit_mb = MAX_ZIP_ENTRY_BYTES / (1024 * 1024)
+            raise ValueError(
+                f"conversations.json is {size_mb:.0f} MB, "
+                f"exceeds {limit_mb:.0f} MB limit"
+            )
+
+        with zf.open(conversations_path) as f:
             return json.load(f)
 
 
@@ -528,7 +605,9 @@ def save_session(db, session_row, message_rows):
 
 
 def ensure_db_shape(db):
-    """Set up indexes, FTS, and views after all data is inserted."""
+    """Set up indexes, FTS, foreign keys, and views after all data is inserted."""
+    db.execute("PRAGMA foreign_keys = ON")
+
     # Indexes
     table_names = db.table_names()
 

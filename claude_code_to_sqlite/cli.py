@@ -1,4 +1,6 @@
 """CLI for claude-code-to-sqlite."""
+import sys
+
 import click
 import sqlite_utils
 from pathlib import Path
@@ -120,6 +122,9 @@ def sessions(db_path, session_dir, include_agents, limit, dry_run, silent):
             db_size = Path(db_path).stat().st_size / (1024 * 1024)
             click.echo(f"Database: {db_path} ({db_size:.1f} MB)")
 
+    if errors:
+        sys.exit(1)
+
 
 @cli.command()
 @click.argument("db_path", type=click.Path(file_okay=True, dir_okay=False))
@@ -203,6 +208,9 @@ def web_export(db_path, zip_path, silent):
         db_size = Path(db_path).stat().st_size / (1024 * 1024)
         click.echo(f"Database: {db_path} ({db_size:.1f} MB)")
 
+    if errors:
+        sys.exit(1)
+
 
 @cli.command()
 @click.argument("db_path", type=click.Path(exists=True))
@@ -253,4 +261,6 @@ def stats(db_path):
         "WHERE start_time IS NOT NULL"
     ).fetchone()
     if date_range[0]:
-        click.echo(f"\nDate range: {date_range[0][:10]} to {date_range[1][:10]}")
+        start = date_range[0][:10] if date_range[0] else "?"
+        end = date_range[1][:10] if date_range[1] else "?"
+        click.echo(f"\nDate range: {start} to {end}")

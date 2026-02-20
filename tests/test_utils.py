@@ -23,7 +23,7 @@ def db(tmp_path):
 
 
 def write_jsonl(path, records):
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         for rec in records:
             f.write(json.dumps(rec) + "\n")
 
@@ -320,6 +320,17 @@ class TestFileFiltering:
         (tmp_dir / "session.json").touch()
         files = utils.collect_session_files(tmp_dir)
         assert len(files) == 2
+
+    def test_skip_metadata_files(self, tmp_dir):
+        """sessions-index.json and timeline.json are metadata, not sessions."""
+        (tmp_dir / "sessions-index.json").touch()
+        subdir = tmp_dir / ".timelines" / "abc"
+        subdir.mkdir(parents=True)
+        (subdir / "timeline.json").touch()
+        (tmp_dir / "real-session.jsonl").touch()
+        files = utils.collect_session_files(tmp_dir)
+        assert len(files) == 1
+        assert files[0].name == "real-session.jsonl"
 
 
 # --- Tests: Content extraction ---
@@ -707,9 +718,14 @@ class TestEdgeCases:
         assert "AAAA" not in messages[0]["content"]
         assert "image/png" in messages[0]["content"]
 
-    def test_dir_to_project(self):
-        assert utils.dir_to_project("-home-louthenw-apps") == "//home/louthenw/apps"
-        assert utils.dir_to_project("-etc-containers") == "//etc/containers"
+    def test_dir_to_project_absolute(self):
+        assert utils.dir_to_project("-home-louthenw-apps") == "/home/louthenw/apps"
+        assert utils.dir_to_project("-etc-containers") == "/etc/containers"
+
+    def test_dir_to_project_relative(self):
+        """Relative directory names (no leading dash) are left unchanged."""
+        assert utils.dir_to_project("my-cool-project") == "my-cool-project"
+        assert utils.dir_to_project("projects") == "projects"
 
     def test_content_truncation(self, tmp_dir):
         """Very long content should be capped at 100K chars."""

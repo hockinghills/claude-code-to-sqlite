@@ -1,4 +1,5 @@
 """CLI for claude-code-to-sqlite."""
+import logging
 import sys
 
 import click
@@ -13,8 +14,15 @@ DEFAULT_CLAUDE_DIR = Path.home() / ".claude" / "projects"
 
 @click.group()
 @click.version_option()
-def cli():
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Show detailed logging output",
+)
+def cli(verbose):
     "Save Claude Code session transcripts to a SQLite database"
+    if verbose:
+        logging.basicConfig(level=logging.INFO)
 
 
 @cli.command()
@@ -189,7 +197,7 @@ def web_export(db_path, zip_path, silent):
 
     for conv in conversations:
         try:
-            session_row, message_rows = utils.process_web_conversation(conv)
+            session_row, message_rows = utils.process_web_conversation(conv, zip_path=zip_path)
             if session_row:
                 utils.save_session(db, session_row, message_rows)
                 session_count += 1

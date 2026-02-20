@@ -40,8 +40,6 @@ def should_skip_file(filepath, include_agents=False):
         return True
     if " copy" in name or "(1)" in name:
         return True
-    if name.startswith("pre-surgery-") or name.startswith("surgery-backup-"):
-        return True
     # Skip Claude Code metadata files that aren't session transcripts
     if name in ("sessions-index.json", "timeline.json"):
         return True
@@ -320,6 +318,7 @@ def process_session(filepath, project=None):
 
         if rtype == "custom-title":
             custom_title = record.get("customTitle", "")
+            continue
 
         # Skip bulky snapshots from messages table
         if rtype == "file-history-snapshot":
@@ -449,7 +448,7 @@ def load_web_export(zip_path):
             return json.load(f)
 
 
-def process_web_conversation(conversation):
+def process_web_conversation(conversation, zip_path=None):
     """Process a single conversation from a claude.ai web export.
 
     Returns (session_row, message_rows).
@@ -527,8 +526,8 @@ def process_web_conversation(conversation):
         "total_input_tokens": 0,
         "total_output_tokens": 0,
         "total_tokens": 0,
-        "file_path": None,
-        "file_size_bytes": None,
+        "file_path": str(zip_path) if zip_path else None,
+        "file_size_bytes": Path(zip_path).stat().st_size if zip_path else None,
         "source": "web",
     }
 
@@ -605,6 +604,7 @@ def save_session(db, session_row, message_rows):
 
 def ensure_db_shape(db):
     """Set up indexes, FTS, foreign keys, and views after all data is inserted."""
+    # Per-connection setting: enforces FK constraints for index_foreign_keys() below
     db.execute("PRAGMA foreign_keys = ON")
 
     # Indexes

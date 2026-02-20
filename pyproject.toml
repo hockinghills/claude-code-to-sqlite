@@ -2,12 +2,13 @@
 name = "claude-code-to-sqlite"
 version = "0.1.0"
 description = "Save Claude Code session transcripts to a SQLite database"
+authors = [{ name = "hockinghills" }]
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "click",
-    "sqlite-utils",
+    "sqlite-utils>=3.0",
 ]
 
 [build-system]

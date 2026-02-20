@@ -499,6 +499,28 @@ class TestCLISessionProcessing:
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
 
+    def test_custom_title_not_in_messages(self, tmp_dir):
+        """custom-title records should set the title, not create a message."""
+        records = [
+            {
+                "type": "user",
+                "sessionId": "title-test",
+                "timestamp": "2025-06-15T10:00:00Z",
+                "message": {"role": "user", "content": "hello"},
+            },
+            {
+                "type": "custom-title",
+                "sessionId": "title-test",
+                "customTitle": "My custom title",
+            },
+        ]
+        filepath = tmp_dir / "title-test.jsonl"
+        write_jsonl(filepath, records)
+        session, messages = utils.process_session(filepath)
+        assert session["custom_title"] == "My custom title"
+        assert len(messages) == 1
+        assert messages[0]["role"] == "user"
+
     def test_empty_file(self, tmp_dir):
         filepath = tmp_dir / "empty.jsonl"
         filepath.write_text("")
@@ -522,7 +544,7 @@ class TestCLISessionProcessing:
 class TestBrowserExportProcessing:
     def test_browser_session(self, tmp_dir):
         filepath = make_browser_session(tmp_dir)
-        session, messages = utils.process_session(filepath)
+        session, _ = utils.process_session(filepath)
         assert session is not None
         assert session["session_id"] == "browser-456"
         assert session["source"] == "browser"
@@ -555,7 +577,7 @@ class TestWebExportProcessing:
     def test_process_web_conversation(self, tmp_dir):
         zip_path = make_web_export_zip(tmp_dir)
         conversations = utils.load_web_export(zip_path)
-        session, messages = utils.process_web_conversation(conversations[0])
+        session, _ = utils.process_web_conversation(conversations[0])
         assert session is not None
         assert session["session_id"] == "web-conv-001"
         assert session["source"] == "web"
@@ -687,12 +709,12 @@ class TestSQLiteInsertion:
 
 class TestEdgeCases:
     def test_session_with_no_messages(self, tmp_dir):
-        records = [{"type": "summary", "summary": "Empty session", "sessionId": "empty-1"}]
+        """Summary-only session: session_id falls back to filepath stem."""
+        records = [{"type": "summary", "summary": "Empty session"}]
         filepath = tmp_dir / "empty-1.jsonl"
         write_jsonl(filepath, records)
         session, messages = utils.process_session(filepath)
-        # Summary-only sessions have no session_id from records
-        # The stem is used as fallback
+        assert session["session_id"] == "empty-1"
         assert messages == []
 
     def test_base64_in_user_content(self, tmp_dir):

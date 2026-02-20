@@ -170,6 +170,10 @@ GROUP BY day, model ORDER BY day DESC
 - **Content truncation**: Caps individual messages at 100K characters
 - **Schema evolution**: Uses `alter=True` so new fields in future Claude Code versions are automatically added
 
+## Known limitations
+
+- **Project path reconstruction is best-effort.** Claude Code encodes directory paths by replacing `/` with `-`. Since hyphens in directory names are ambiguous, `-home-my-cool-project` becomes `/home/my/cool/project` rather than `/home/my-cool-project`. The `project` column is useful for grouping but may not exactly match the original path.
+
 ## Development
 
 ```bash

@@ -513,7 +513,8 @@ class TestCLISessionProcessing:
         filepath.write_text(good + "\n" + bad + "\n")
         session, messages = utils.process_session(filepath)
         assert session is not None
-        assert len(messages) >= 1
+        # 1 good line + 2 records recovered from the concatenated bad line
+        assert len(messages) >= 2
 
 
 # --- Tests: Browser export processing ---
@@ -677,7 +678,9 @@ class TestSQLiteInsertion:
                 "(SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'help')"
             ).fetchall()
         )
-        assert len(results) >= 1
+        assert len(results) == 2
+        matched_content = [r[0] for r in results]
+        assert any("help" in c.lower() for c in matched_content)
 
 
 # --- Tests: Edge cases ---

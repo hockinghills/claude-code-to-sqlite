@@ -58,7 +58,7 @@ def sessions(db_path, session_dir, include_agents, limit, dry_run, silent):
     session_dir = Path(session_dir)
 
     files = utils.collect_session_files(session_dir, include_agents=include_agents)
-    if limit:
+    if limit is not None:
         files = files[:limit]
 
     if not files:
@@ -75,7 +75,7 @@ def sessions(db_path, session_dir, include_agents, limit, dry_run, silent):
         for filepath in files:
             project = _project_from_path(filepath, session_dir)
             try:
-                session_row, message_rows, warnings = utils.process_session(filepath, project)
+                session_row, message_rows, _ = utils.process_session(filepath, project)
                 if session_row:
                     if not dry_run:
                         utils.save_session(db, session_row, message_rows)

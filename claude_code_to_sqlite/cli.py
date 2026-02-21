@@ -211,7 +211,10 @@ def web_export(db_path, zip_path, silent):
 
 
 @cli.command()
-@click.argument("db_path", type=click.Path(exists=True))
+@click.argument(
+    "db_path",
+    type=click.Path(exists=True, allow_dash=False),
+)
 def stats(db_path):
     "Show statistics about a Claude Code SQLite database"
     db = sqlite_utils.Database(db_path)

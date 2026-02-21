@@ -657,7 +657,8 @@ def ensure_db_shape(db):
 
     for table_name, fts_conf in FTS_CONFIG.items():
         fts_table = f"{table_name}_fts"
-        if table_name in table_names and fts_table not in table_names:
+        current_tables = db.table_names()
+        if table_name in current_tables and fts_table not in current_tables:
             db[table_name].enable_fts(
                 fts_conf["columns"],
                 create_triggers=fts_conf.get("create_triggers", True),

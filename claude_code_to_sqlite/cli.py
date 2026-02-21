@@ -1,7 +1,4 @@
-"""CLI for claude-code-to-sqlite."""
-import logging
-import sys
-
+"CLI for claude-code-to-sqlite."
 import click
 import sqlite_utils
 from pathlib import Path
@@ -14,19 +11,15 @@ DEFAULT_CLAUDE_DIR = Path.home() / ".claude" / "projects"
 
 @click.group()
 @click.version_option()
-@click.option(
-    "--verbose",
-    is_flag=True,
-    help="Show detailed logging output",
-)
-def cli(verbose):
+def cli():
     "Save Claude Code session transcripts to a SQLite database"
-    if verbose:
-        logging.basicConfig(level=logging.INFO)
 
 
 @cli.command()
-@click.argument("db_path", type=click.Path(file_okay=True, dir_okay=False))
+@click.argument(
+    "db_path",
+    type=click.Path(file_okay=True, dir_okay=False, allow_dash=False),
+)
 @click.argument(
     "session_dir",
     type=click.Path(exists=True),
@@ -54,18 +47,7 @@ def cli(verbose):
     help="Suppress progress output",
 )
 def sessions(db_path, session_dir, include_agents, limit, dry_run, silent):
-    """Import Claude Code sessions from a directory.
-
-    Reads JSONL session files from SESSION_DIR (defaults to ~/.claude/projects/)
-    and imports them into a SQLite database at DB_PATH.
-
-    \b
-    Examples:
-        claude-code-to-sqlite sessions claude.db
-        claude-code-to-sqlite sessions claude.db ~/my-sessions/
-        claude-code-to-sqlite sessions claude.db --include-agents
-        claude-code-to-sqlite sessions claude.db --limit=10 --dry-run
-    """
+    "Import Claude Code sessions from a directory"
     if session_dir is None:
         session_dir = DEFAULT_CLAUDE_DIR
         if not session_dir.exists():
@@ -75,81 +57,82 @@ def sessions(db_path, session_dir, include_agents, limit, dry_run, silent):
             )
     session_dir = Path(session_dir)
 
-    # Collect files
     files = utils.collect_session_files(session_dir, include_agents=include_agents)
-    if limit:
+    if limit is not None:
         files = files[:limit]
 
     if not files:
         raise click.ClickException(f"No session files found in {session_dir}")
 
-    if not silent:
-        click.echo(f"Found {len(files)} session files in {session_dir}")
-
     if not dry_run:
         db = sqlite_utils.Database(db_path)
 
-    # Process files
     session_count = 0
     message_count = 0
     errors = []
 
-    for i, filepath in enumerate(files):
-        # Determine project from parent directory name
-        try:
-            rel = filepath.relative_to(session_dir)
-            project_dir = rel.parts[0] if len(rel.parts) > 1 else "default"
-            project = utils.dir_to_project(project_dir)
-        except (ValueError, IndexError):
-            project = "unknown"
-
-        try:
-            session_row, message_rows = utils.process_session(filepath, project)
-            if session_row:
-                if not dry_run:
-                    utils.save_session(db, session_row, message_rows)
-                session_count += 1
-                message_count += len(message_rows)
-            if not silent and (i + 1) % 100 == 0:
-                click.echo(f"  processed {i + 1}/{len(files)}...")
-        except Exception as e:
-            errors.append({"file": str(filepath), "error": str(e)})
-            if not silent:
-                click.echo(f"  error: {filepath.name}: {e}", err=True)
+    if silent:
+        for filepath in files:
+            project = _project_from_path(filepath, session_dir)
+            try:
+                session_row, message_rows, _ = utils.process_session(filepath, project)
+                if session_row:
+                    if not dry_run:
+                        utils.save_session(db, session_row, message_rows)
+                    session_count += 1
+                    message_count += len(message_rows)
+            except Exception as e:
+                errors.append({"file": str(filepath), "error": str(e)})
+    else:
+        all_warnings = []
+        with click.progressbar(
+            files,
+            label=f"Importing {len(files)} sessions",
+            show_pos=True,
+        ) as bar:
+            for filepath in bar:
+                project = _project_from_path(filepath, session_dir)
+                try:
+                    session_row, message_rows, warnings = utils.process_session(filepath, project)
+                    all_warnings.extend(warnings)
+                    if session_row:
+                        if not dry_run:
+                            utils.save_session(db, session_row, message_rows)
+                        session_count += 1
+                        message_count += len(message_rows)
+                except Exception as e:
+                    errors.append({"file": str(filepath), "error": str(e)})
+        for w in all_warnings:
+            click.echo(w, err=True)
 
     if not dry_run:
-        if not silent:
-            click.echo("Finalizing database schema...")
         utils.ensure_db_shape(db)
 
     if not silent:
-        click.echo(f"\n{session_count} sessions, {message_count:,} messages")
-        if errors:
-            click.echo(f"{len(errors)} errors", err=True)
+        click.echo(f"{session_count} sessions, {message_count:,} messages")
         if not dry_run:
             db_size = Path(db_path).stat().st_size / (1024 * 1024)
             click.echo(f"Database: {db_path} ({db_size:.1f} MB)")
 
     if errors:
-        sys.exit(1)
+        raise click.ClickException(f"{len(errors)} files had errors")
 
 
 @cli.command()
-@click.argument("db_path", type=click.Path(file_okay=True, dir_okay=False))
+@click.argument(
+    "db_path",
+    type=click.Path(file_okay=True, dir_okay=False, allow_dash=False),
+)
 @click.argument("session_file", type=click.Path(exists=True))
 @click.option("--project", default=None, help="Project name for this session")
 def session(db_path, session_file, project):
-    """Import a single session file.
-
-    \b
-    Examples:
-        claude-code-to-sqlite session claude.db path/to/session.jsonl
-        claude-code-to-sqlite session claude.db session.jsonl --project myapp
-    """
+    "Import a single session file"
     db = sqlite_utils.Database(db_path)
     filepath = Path(session_file)
 
-    session_row, message_rows = utils.process_session(filepath, project)
+    session_row, message_rows, warnings = utils.process_session(filepath, project)
+    for w in warnings:
+        click.echo(w, err=True)
     if not session_row:
         raise click.ClickException(f"No data found in {session_file}")
 
@@ -163,7 +146,10 @@ def session(db_path, session_file, project):
 
 
 @cli.command(name="web-export")
-@click.argument("db_path", type=click.Path(file_okay=True, dir_okay=False))
+@click.argument(
+    "db_path",
+    type=click.Path(file_okay=True, dir_okay=False, allow_dash=False),
+)
 @click.argument("zip_path", type=click.Path(exists=True))
 @click.option(
     "--silent",
@@ -171,70 +157,70 @@ def session(db_path, session_file, project):
     help="Suppress progress output",
 )
 def web_export(db_path, zip_path, silent):
-    """Import conversations from a claude.ai data export ZIP.
-
-    The ZIP file is downloaded from claude.ai Settings > Account > Export Data.
-    It contains conversations.json with all your web chat history.
-
-    \b
-    Examples:
-        claude-code-to-sqlite web-export claude.db data-export.zip
-    """
-    if not silent:
-        click.echo(f"Loading web export from {zip_path}...")
-
+    "Import conversations from a claude.ai data export ZIP"
     conversations = utils.load_web_export(zip_path)
     if not conversations:
         raise click.ClickException("No conversations found in export")
-
-    if not silent:
-        click.echo(f"Found {len(conversations)} conversations")
 
     db = sqlite_utils.Database(db_path)
     session_count = 0
     message_count = 0
     errors = []
 
-    for conv in conversations:
-        try:
-            session_row, message_rows = utils.process_web_conversation(conv, zip_path=zip_path)
-            if session_row:
-                utils.save_session(db, session_row, message_rows)
-                session_count += 1
-                message_count += len(message_rows)
-        except Exception as e:
-            errors.append({"uuid": conv.get("uuid", "?"), "error": str(e)})
-            if not silent:
-                click.echo(f"  error: {conv.get('name', '?')}: {e}", err=True)
+    if silent:
+        for conv in conversations:
+            try:
+                session_row, message_rows = utils.process_web_conversation(
+                    conv, zip_path=zip_path
+                )
+                if session_row:
+                    utils.save_session(db, session_row, message_rows)
+                    session_count += 1
+                    message_count += len(message_rows)
+            except Exception as e:
+                errors.append({"uuid": conv.get("uuid", "?"), "error": str(e)})
+    else:
+        with click.progressbar(
+            conversations,
+            label=f"Importing {len(conversations)} conversations",
+            show_pos=True,
+        ) as bar:
+            for conv in bar:
+                try:
+                    session_row, message_rows = utils.process_web_conversation(
+                        conv, zip_path=zip_path
+                    )
+                    if session_row:
+                        utils.save_session(db, session_row, message_rows)
+                        session_count += 1
+                        message_count += len(message_rows)
+                except Exception as e:
+                    errors.append({"uuid": conv.get("uuid", "?"), "error": str(e)})
 
     utils.ensure_db_shape(db)
 
     if not silent:
-        click.echo(f"\n{session_count} conversations, {message_count:,} messages")
-        if errors:
-            click.echo(f"{len(errors)} errors", err=True)
+        click.echo(f"{session_count} conversations, {message_count:,} messages")
         db_size = Path(db_path).stat().st_size / (1024 * 1024)
         click.echo(f"Database: {db_path} ({db_size:.1f} MB)")
 
     if errors:
-        sys.exit(1)
+        raise click.ClickException(f"{len(errors)} conversations had errors")
 
 
 @cli.command()
-@click.argument("db_path", type=click.Path(exists=True))
+@click.argument(
+    "db_path",
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, allow_dash=False),
+)
 def stats(db_path):
-    """Show statistics about a Claude Code SQLite database.
-
-    \b
-    Examples:
-        claude-code-to-sqlite stats claude.db
-    """
+    "Show statistics about a Claude Code SQLite database"
     db = sqlite_utils.Database(db_path)
 
-    if "sessions" not in db.table_names():
+    table_names = db.table_names()
+    if "sessions" not in table_names:
         raise click.ClickException("No sessions table found in database")
 
-    table_names = db.table_names()
     has_messages = "messages" in table_names
 
     session_count = db.execute("SELECT count(*) FROM sessions").fetchone()[0]
@@ -281,3 +267,13 @@ def stats(db_path):
         start = date_range[0][:10] if date_range[0] else "?"
         end = date_range[1][:10] if date_range[1] else "?"
         click.echo(f"\nDate range: {start} to {end}")
+
+
+def _project_from_path(filepath, session_dir):
+    "Determine project name from a session file's location in the directory tree."
+    try:
+        rel = filepath.relative_to(session_dir)
+        project_dir = rel.parts[0] if len(rel.parts) > 1 else "default"
+        return utils.dir_to_project(project_dir)
+    except (ValueError, IndexError):
+        return "unknown"

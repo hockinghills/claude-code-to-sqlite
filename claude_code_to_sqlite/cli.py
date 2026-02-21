@@ -110,8 +110,6 @@ def sessions(db_path, session_dir, include_agents, limit, dry_run, silent):
 
     if not silent:
         click.echo(f"{session_count} sessions, {message_count:,} messages")
-        if errors:
-            click.echo(f"{len(errors)} errors", err=True)
         if not dry_run:
             db_size = Path(db_path).stat().st_size / (1024 * 1024)
             click.echo(f"Database: {db_path} ({db_size:.1f} MB)")
@@ -203,8 +201,6 @@ def web_export(db_path, zip_path, silent):
 
     if not silent:
         click.echo(f"{session_count} conversations, {message_count:,} messages")
-        if errors:
-            click.echo(f"{len(errors)} errors", err=True)
         db_size = Path(db_path).stat().st_size / (1024 * 1024)
         click.echo(f"Database: {db_path} ({db_size:.1f} MB)")
 
@@ -221,10 +217,10 @@ def stats(db_path):
     "Show statistics about a Claude Code SQLite database"
     db = sqlite_utils.Database(db_path)
 
-    if "sessions" not in db.table_names():
+    table_names = db.table_names()
+    if "sessions" not in table_names:
         raise click.ClickException("No sessions table found in database")
 
-    table_names = db.table_names()
     has_messages = "messages" in table_names
 
     session_count = db.execute("SELECT count(*) FROM sessions").fetchone()[0]

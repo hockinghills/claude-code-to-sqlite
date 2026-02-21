@@ -664,8 +664,9 @@ def ensure_db_shape(db):
                 create_triggers=fts_conf.get("create_triggers", True),
             )
 
+    current_tables = db.table_names()
     for view_name, view_conf in VIEWS.items():
-        if all(t in table_names for t in view_conf["requires"]):
+        if all(t in current_tables for t in view_conf["requires"]):
             db.create_view(view_name, view_conf["sql"], replace=True)
 
     db.index_foreign_keys()

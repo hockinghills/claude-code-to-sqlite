@@ -84,6 +84,7 @@ def sessions(db_path, session_dir, include_agents, limit, dry_run, silent):
             except Exception as e:
                 errors.append({"file": str(filepath), "error": str(e)})
     else:
+        all_warnings = []
         with click.progressbar(
             files,
             label=f"Importing {len(files)} sessions",
@@ -93,8 +94,7 @@ def sessions(db_path, session_dir, include_agents, limit, dry_run, silent):
                 project = _project_from_path(filepath, session_dir)
                 try:
                     session_row, message_rows, warnings = utils.process_session(filepath, project)
-                    for w in warnings:
-                        click.echo(w, err=True)
+                    all_warnings.extend(warnings)
                     if session_row:
                         if not dry_run:
                             utils.save_session(db, session_row, message_rows)
@@ -102,6 +102,8 @@ def sessions(db_path, session_dir, include_agents, limit, dry_run, silent):
                         message_count += len(message_rows)
                 except Exception as e:
                     errors.append({"file": str(filepath), "error": str(e)})
+        for w in all_warnings:
+            click.echo(w, err=True)
 
     if not dry_run:
         utils.ensure_db_shape(db)
@@ -213,7 +215,7 @@ def web_export(db_path, zip_path, silent):
 @cli.command()
 @click.argument(
     "db_path",
-    type=click.Path(exists=True, allow_dash=False),
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, allow_dash=False),
 )
 def stats(db_path):
     "Show statistics about a Claude Code SQLite database"

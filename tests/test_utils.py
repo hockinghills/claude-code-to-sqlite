@@ -1,7 +1,6 @@
-"""Tests for claude_code_to_sqlite.utils."""
+"Tests for claude_code_to_sqlite."
 import json
 import zipfile
-import tempfile
 from pathlib import Path
 
 import sqlite_utils
@@ -18,8 +17,8 @@ def tmp_dir(tmp_path):
 
 
 @pytest.fixture
-def db(tmp_path):
-    return sqlite_utils.Database(tmp_path / "test.db")
+def db():
+    return sqlite_utils.Database(memory=True)
 
 
 def write_jsonl(path, records):
@@ -408,7 +407,7 @@ class TestContentExtraction:
 class TestCLISessionProcessing:
     def test_basic_session(self, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, messages = utils.process_session(filepath, project="/test")
+        session, messages, _ = utils.process_session(filepath, project="/test")
         assert session is not None
         assert session["session_id"] == "abc-123"
         assert session["summary"] == "Test session"
@@ -420,45 +419,45 @@ class TestCLISessionProcessing:
 
     def test_message_roles(self, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         assert messages[0]["role"] == "user"
         assert messages[1]["role"] == "assistant"
 
     def test_message_content(self, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         assert "Hello" in messages[0]["content"]
         assert "Sure" in messages[1]["content"]
 
     def test_token_counting(self, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, _ = utils.process_session(filepath)
+        session, _, _ = utils.process_session(filepath)
         assert session["total_input_tokens"] == 100
         assert session["total_output_tokens"] == 50
         assert session["total_tokens"] == 150
 
     def test_model_tracking(self, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, _ = utils.process_session(filepath)
+        session, _, _ = utils.process_session(filepath)
         models = json.loads(session["models"])
         assert "claude-sonnet-4-5-20250929" in models
 
     def test_timestamps(self, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, _ = utils.process_session(filepath)
+        session, _, _ = utils.process_session(filepath)
         assert session["start_time"] == "2025-06-15T10:00:00Z"
         assert session["end_time"] == "2025-06-15T10:00:05Z"
 
     def test_message_counts(self, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, _ = utils.process_session(filepath)
+        session, _, _ = utils.process_session(filepath)
         assert session["message_count"] == 2
         assert session["user_message_count"] == 1
         assert session["assistant_message_count"] == 1
 
     def test_tool_calls(self, tmp_dir):
         filepath = make_cli_session_with_tools(tmp_dir)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         assistant_msg = messages[1]
         assert assistant_msg["tool_names"] is not None
         tool_names = json.loads(assistant_msg["tool_names"])
@@ -466,14 +465,14 @@ class TestCLISessionProcessing:
 
     def test_tool_results(self, tmp_dir):
         filepath = make_cli_session_with_tools(tmp_dir)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         tool_result_msg = messages[2]
         assert tool_result_msg["is_tool_result"] is True
         assert tool_result_msg["tool_use_id"] == "call_001"
 
     def test_thinking_blocks(self, tmp_dir):
         filepath = make_cli_session_with_thinking(tmp_dir)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         assistant_msg = messages[1]
         assert assistant_msg["thinking"] is not None
         assert "2+2" in assistant_msg["thinking"]
@@ -495,7 +494,7 @@ class TestCLISessionProcessing:
         ]
         filepath = tmp_dir / "snap-test.jsonl"
         write_jsonl(filepath, records)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
 
@@ -516,7 +515,7 @@ class TestCLISessionProcessing:
         ]
         filepath = tmp_dir / "title-test.jsonl"
         write_jsonl(filepath, records)
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         assert session["custom_title"] == "My custom title"
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
@@ -524,7 +523,7 @@ class TestCLISessionProcessing:
     def test_empty_file(self, tmp_dir):
         filepath = tmp_dir / "empty.jsonl"
         filepath.write_text("")
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         assert session is None
         assert messages == []
 
@@ -533,10 +532,23 @@ class TestCLISessionProcessing:
         good = json.dumps({"type": "user", "sessionId": "c1", "timestamp": "2025-01-01T00:00:00Z", "message": {"role": "user", "content": "hello"}})
         bad = good.rstrip("}") + json.dumps({"type": "assistant", "sessionId": "c1", "timestamp": "2025-01-01T00:00:01Z", "message": {"role": "assistant", "content": "hi"}})
         filepath.write_text(good + "\n" + bad + "\n")
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         assert session is not None
         # 1 good line + 2 records recovered from the concatenated bad line
         assert len(messages) >= 2
+
+    def test_corrupted_line_warnings(self, tmp_dir):
+        """Unrecoverable lines produce warnings in the returned list."""
+        filepath = tmp_dir / "bad.jsonl"
+        good = json.dumps({"type": "user", "sessionId": "w1", "timestamp": "2025-01-01T00:00:00Z", "message": {"role": "user", "content": "hello"}})
+        filepath.write_text(good + "\n" + "this is not json at all\n" + "also broken\n")
+        session, messages, warnings = utils.process_session(filepath)
+        assert session is not None
+        assert len(messages) == 1
+        assert len(warnings) == 2
+        assert "line 2" in warnings[0]
+        assert "unrecoverable JSON parse error" in warnings[0]
+        assert "line 3" in warnings[1]
 
 
 # --- Tests: Browser export processing ---
@@ -544,7 +556,7 @@ class TestCLISessionProcessing:
 class TestBrowserExportProcessing:
     def test_browser_session(self, tmp_dir):
         filepath = make_browser_session(tmp_dir)
-        session, _ = utils.process_session(filepath)
+        session, _, _ = utils.process_session(filepath)
         assert session is not None
         assert session["session_id"] == "browser-456"
         assert session["source"] == "browser"
@@ -552,7 +564,7 @@ class TestBrowserExportProcessing:
 
     def test_browser_messages(self, tmp_dir):
         filepath = make_browser_session(tmp_dir)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
         assert "pasta" in messages[0]["content"]
@@ -562,7 +574,7 @@ class TestBrowserExportProcessing:
     def test_browser_string_content(self, tmp_dir):
         """Browser exports use string content, not content blocks."""
         filepath = make_browser_session(tmp_dir)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         assert isinstance(messages[1]["content"], str)
 
 
@@ -620,22 +632,28 @@ class TestWebExportProcessing:
 class TestSQLiteInsertion:
     def test_save_and_retrieve_session(self, db, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         utils.save_session(db, session, messages)
         rows = list(db["sessions"].rows)
         assert len(rows) == 1
         assert rows[0]["session_id"] == "abc-123"
 
+    def test_save_returns_session_id(self, db, tmp_dir):
+        filepath = make_cli_session(tmp_dir)
+        session, messages, _ = utils.process_session(filepath)
+        result = utils.save_session(db, session, messages)
+        assert result == "abc-123"
+
     def test_save_and_retrieve_messages(self, db, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         utils.save_session(db, session, messages)
         rows = list(db["messages"].rows)
         assert len(rows) == 2
 
     def test_idempotent_reimport(self, db, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         utils.save_session(db, session, messages)
         utils.save_session(db, session, messages)
         assert db["sessions"].count == 1
@@ -644,8 +662,8 @@ class TestSQLiteInsertion:
     def test_multiple_sessions(self, db, tmp_dir):
         f1 = make_cli_session(tmp_dir, session_id="sess-1")
         f2 = make_cli_session(tmp_dir, session_id="sess-2")
-        s1, m1 = utils.process_session(f1)
-        s2, m2 = utils.process_session(f2)
+        s1, m1, _ = utils.process_session(f1)
+        s2, m2, _ = utils.process_session(f2)
         utils.save_session(db, s1, m1)
         utils.save_session(db, s2, m2)
         assert db["sessions"].count == 2
@@ -654,8 +672,8 @@ class TestSQLiteInsertion:
     def test_mixed_sources(self, db, tmp_dir):
         cli_file = make_cli_session(tmp_dir, session_id="cli-1")
         browser_file = make_browser_session(tmp_dir, session_id="browser-1")
-        s1, m1 = utils.process_session(cli_file)
-        s2, m2 = utils.process_session(browser_file)
+        s1, m1, _ = utils.process_session(cli_file)
+        s2, m2, _ = utils.process_session(browser_file)
         utils.save_session(db, s1, m1)
         utils.save_session(db, s2, m2)
         sources = {row["source"] for row in db["sessions"].rows}
@@ -663,7 +681,7 @@ class TestSQLiteInsertion:
 
     def test_ensure_db_shape_creates_indexes(self, db, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         utils.save_session(db, session, messages)
         utils.ensure_db_shape(db)
         msg_indexes = [idx.columns for idx in db["messages"].indexes]
@@ -672,14 +690,14 @@ class TestSQLiteInsertion:
 
     def test_ensure_db_shape_creates_fts(self, db, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         utils.save_session(db, session, messages)
         utils.ensure_db_shape(db)
         assert "messages_fts" in db.table_names()
 
     def test_ensure_db_shape_creates_views(self, db, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         utils.save_session(db, session, messages)
         utils.ensure_db_shape(db)
         view_names = db.view_names()
@@ -691,7 +709,7 @@ class TestSQLiteInsertion:
 
     def test_fts_search(self, db, tmp_dir):
         filepath = make_cli_session(tmp_dir)
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         utils.save_session(db, session, messages)
         utils.ensure_db_shape(db)
         results = list(
@@ -713,7 +731,7 @@ class TestEdgeCases:
         records = [{"type": "summary", "summary": "Empty session"}]
         filepath = tmp_dir / "empty-1.jsonl"
         write_jsonl(filepath, records)
-        session, messages = utils.process_session(filepath)
+        session, messages, _ = utils.process_session(filepath)
         assert session["session_id"] == "empty-1"
         assert messages == []
 
@@ -741,7 +759,7 @@ class TestEdgeCases:
         ]
         filepath = tmp_dir / "b64-test.jsonl"
         write_jsonl(filepath, records)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         assert "AAAA" not in messages[0]["content"]
         assert "image/png" in messages[0]["content"]
 
@@ -769,5 +787,112 @@ class TestEdgeCases:
         ]
         filepath = tmp_dir / "long-test.jsonl"
         write_jsonl(filepath, records)
-        _, messages = utils.process_session(filepath)
+        _, messages, _ = utils.process_session(filepath)
         assert len(messages[0]["content"]) == 100_000
+
+
+# --- Tests: CLI commands ---
+
+class TestCLICommands:
+    def test_sessions_command(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        project_dir = tmp_dir / "-home-user-myapp"
+        project_dir.mkdir()
+        make_cli_session(project_dir)
+
+        db_path = str(tmp_dir / "test.db")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["sessions", db_path, str(tmp_dir)])
+        assert result.exit_code == 0
+        assert "1 sessions" in result.output
+
+        db = sqlite_utils.Database(db_path)
+        assert db["sessions"].count == 1
+        assert db["messages"].count == 2
+
+    def test_sessions_command_no_files(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        empty_dir = tmp_dir / "empty"
+        empty_dir.mkdir()
+        db_path = str(tmp_dir / "test.db")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["sessions", db_path, str(empty_dir)])
+        assert result.exit_code != 0
+        assert "No session files found" in result.output
+
+    def test_session_command(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        filepath = make_cli_session(tmp_dir)
+        db_path = str(tmp_dir / "test.db")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["session", db_path, str(filepath), "--project", "myapp"]
+        )
+        assert result.exit_code == 0
+        assert "Imported session abc-123" in result.output
+
+        db = sqlite_utils.Database(db_path)
+        row = list(db["sessions"].rows)[0]
+        assert row["project"] == "myapp"
+
+    def test_web_export_command(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        zip_path = make_web_export_zip(tmp_dir)
+        db_path = str(tmp_dir / "test.db")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["web-export", db_path, str(zip_path)])
+        assert result.exit_code == 0
+        assert "2 conversations" in result.output
+
+        db = sqlite_utils.Database(db_path)
+        assert db["sessions"].count == 2
+
+    def test_stats_command(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        filepath = make_cli_session(tmp_dir)
+        db_path = str(tmp_dir / "test.db")
+        db = sqlite_utils.Database(db_path)
+        session, messages, _ = utils.process_session(filepath)
+        utils.save_session(db, session, messages)
+        utils.ensure_db_shape(db)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stats", db_path])
+        assert result.exit_code == 0
+        assert "Sessions:" in result.output
+        assert "Messages:" in result.output
+
+    def test_stats_command_no_sessions_table(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        db_path = str(tmp_dir / "empty.db")
+        sqlite_utils.Database(db_path)["other"].insert({"x": 1})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stats", db_path])
+        assert result.exit_code != 0
+        assert "No sessions table" in result.output
+
+    def test_sessions_dry_run(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        make_cli_session(tmp_dir)
+        db_path = str(tmp_dir / "test.db")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["sessions", db_path, str(tmp_dir), "--dry-run"]
+        )
+        assert result.exit_code == 0
+        assert "1 sessions" in result.output
+        assert not Path(db_path).exists()

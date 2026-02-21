@@ -1,19 +1,8 @@
-"""
-Parsing and SQLite insertion logic for Claude Code session transcripts.
-
-Handles:
-  - JSONL (Claude Code CLI sessions)
-  - JSONL (pre-split browser exports)
-  - JSON (claude-code-transcripts style)
-  - ZIP (claude.ai web export: conversations.json)
-"""
+"Parsing and SQLite insertion logic for Claude Code session transcripts."
 import json
-import logging
 import re
 import zipfile
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 # Max uncompressed size we'll load from a ZIP (500 MB)
 MAX_ZIP_ENTRY_BYTES = 500 * 1024 * 1024
@@ -28,7 +17,7 @@ SKIP_PATTERNS = [
 
 
 def should_skip_file(filepath, include_agents=False):
-    """Return True if this file should not be ingested."""
+    "Return True if this file should not be ingested."
     s = filepath.as_posix()
     for pat in SKIP_PATTERNS:
         if pat.search(s):
@@ -50,7 +39,7 @@ def should_skip_file(filepath, include_agents=False):
 
 
 def collect_session_files(data_path, include_agents=False):
-    """Collect JSONL/JSON session files from a directory tree."""
+    "Collect JSONL/JSON session files from a directory tree."
     data_path = Path(data_path)
     files = sorted(
         list(data_path.rglob("*.jsonl")) + list(data_path.rglob("*.json"))
@@ -65,7 +54,7 @@ def collect_session_files(data_path, include_agents=False):
 # --- JSONL parsing with corruption recovery ---
 
 def _extract_records_from_bad_line(line):
-    """Try to extract valid JSON records from a corrupted/concatenated line."""
+    "Try to extract valid JSON records from a corrupted/concatenated line."
     starts = [m.start() for m in re.finditer(r'\{"parentUuid"', line)]
     starts += [m.start() for m in re.finditer(r'\{"type":', line)]
     starts = sorted(set(starts))
@@ -84,27 +73,21 @@ def _extract_records_from_bad_line(line):
 
 
 def load_session_file(filepath):
-    """Load a session file (JSONL or JSON) and return a list of records.
-
-    Handles corrupted JSONL lines by attempting to extract valid JSON
-    fragments. Logs warnings for recovered and unrecoverable lines.
-    """
+    "Load a session file (JSONL or JSON) and return (records, warnings)."
     filepath = Path(filepath)
 
     if filepath.suffix == ".json":
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # Browser exports have a "loglines" key
         if isinstance(data, dict) and "loglines" in data:
-            return data["loglines"]
+            return data["loglines"], []
         if isinstance(data, list):
-            return data
-        return [data]
+            return data, []
+        return [data], []
 
     # JSONL format (CLI sessions)
     records = []
-    recovered = 0
-    unrecoverable = 0
+    warnings = []
     with open(filepath, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
@@ -116,35 +99,23 @@ def load_session_file(filepath):
                 extracted = _extract_records_from_bad_line(line)
                 if extracted:
                     records.extend(extracted)
-                    recovered += len(extracted)
                 else:
-                    unrecoverable += 1
-                    logger.warning(
-                        "%s line %d: unrecoverable JSON parse error",
-                        filepath.name, line_num,
+                    warnings.append(
+                        f"{filepath.name} line {line_num}: "
+                        "unrecoverable JSON parse error"
                     )
-    if recovered:
-        logger.info(
-            "%s: recovered %d records from corrupted lines",
-            filepath.name, recovered,
-        )
-    if unrecoverable:
-        logger.warning(
-            "%s: %d unrecoverable lines skipped",
-            filepath.name, unrecoverable,
-        )
-    return records
+    return records, warnings
 
 
 # --- Content extraction ---
 
 def _base64_decoded_size_kb(encoded_len):
-    """Estimate decoded size in KB from base64 encoded character count."""
+    "Estimate decoded size in KB from base64 encoded character count."
     return (encoded_len * 3 / 4) / 1024
 
 
 def replace_base64_content(content):
-    """Replace base64 image/document data with a size placeholder."""
+    "Replace base64 image/document data with a size placeholder."
     if isinstance(content, str):
         if "base64" in content[:500] and len(content) > 1000:
             size_kb = _base64_decoded_size_kb(len(content))
@@ -181,7 +152,7 @@ def replace_base64_content(content):
 
 
 def extract_text(raw_content):
-    """Extract readable text from message content (string or content blocks)."""
+    "Extract readable text from message content (string or content blocks)."
     if raw_content is None:
         return ""
     if isinstance(raw_content, str):
@@ -216,7 +187,7 @@ def extract_text(raw_content):
 
 
 def extract_thinking(raw_content):
-    """Extract thinking/reasoning text from content blocks."""
+    "Extract thinking/reasoning text from content blocks."
     if not isinstance(raw_content, list):
         return None
     parts = []
@@ -229,7 +200,7 @@ def extract_thinking(raw_content):
 
 
 def extract_tool_calls(raw_content):
-    """Extract tool call info from assistant content blocks."""
+    "Extract tool call info from assistant content blocks."
     if not isinstance(raw_content, list):
         return []
     calls = []
@@ -247,32 +218,22 @@ def dir_to_project(dirname):
     """Convert encoded directory name back to a path.
 
     Claude Code encodes absolute paths by replacing / with -
-    and stripping the leading /. For example:
-        -home-user-project -> /home/user/project
-
-    Hyphens are ambiguous (path separator vs literal hyphen in
-    directory names), so this is a best-effort reconstruction.
-    Directory names without a leading - are returned unchanged,
-    preserving names like "my-cool-project".
+    and stripping the leading /. Hyphens are ambiguous, so this
+    is best-effort. Names without a leading - are returned unchanged.
     """
     if dirname.startswith("-"):
-        # Absolute path encoding: -home-user-project -> /home/user/project
         return "/" + dirname[1:].replace("-", "/")
-    else:
-        return dirname
+    return dirname
 
 
 # --- Session processing ---
 
 def process_session(filepath, project=None):
-    """Process a single session file into (session_dict, message_dicts).
-
-    Returns (session_row, message_rows) suitable for sqlite-utils insertion.
-    """
+    "Process a single session file into (session_dict, message_dicts, warnings)."
     filepath = Path(filepath)
-    records = load_session_file(filepath)
+    records, warnings = load_session_file(filepath)
     if not records:
-        return None, []
+        return None, [], warnings
 
     session_id = None
     summary = None
@@ -380,7 +341,7 @@ def process_session(filepath, project=None):
         msg_index += 1
 
     if not session_id:
-        return None, []
+        return None, [], warnings
 
     session_row = {
         "session_id": session_id,
@@ -404,22 +365,13 @@ def process_session(filepath, project=None):
         "source": source,
     }
 
-    return session_row, message_rows
+    return session_row, message_rows, warnings
 
 
 # --- Web export (claude.ai ZIP) processing ---
 
 def load_web_export(zip_path):
-    """Load conversations from a claude.ai data export ZIP.
-
-    The ZIP contains conversations.json — an array of conversation objects,
-    each with chat_messages using sender/text/content fields.
-
-    Validates the ZIP structure and enforces a size limit to prevent
-    decompression attacks.
-
-    Returns a list of conversation dicts.
-    """
+    "Load conversations from a claude.ai data export ZIP."
     zip_path = Path(zip_path)
     with zipfile.ZipFile(zip_path) as zf:
         # Search for conversations.json anywhere in the archive
@@ -449,10 +401,7 @@ def load_web_export(zip_path):
 
 
 def process_web_conversation(conversation, zip_path=None):
-    """Process a single conversation from a claude.ai web export.
-
-    Returns (session_row, message_rows).
-    """
+    "Process a single conversation from a claude.ai web export."
     session_id = conversation.get("uuid", "")
     name = conversation.get("name", "")
     summary_text = conversation.get("summary", "")
@@ -583,7 +532,7 @@ MESSAGES_COLUMNS = {
 
 
 def save_session(db, session_row, message_rows):
-    """Save a session and its messages to the database."""
+    "Save a session and its messages to the database."
     db["sessions"].insert(
         session_row,
         pk="session_id",
@@ -600,14 +549,102 @@ def save_session(db, session_row, message_rows):
             alter=True,
             replace=True,
         )
+    return session_row["session_id"]
+
+
+FTS_CONFIG = {
+    "messages": {
+        "columns": ["content", "thinking"],
+        "create_triggers": True,
+    },
+}
+
+VIEWS = {
+    "tool_usage": {
+        "requires": ["messages"],
+        "sql": """
+            SELECT
+                json_each.value as tool_name,
+                count(*) as uses,
+                count(distinct session_id) as sessions
+            FROM messages, json_each(messages.tool_names)
+            WHERE tool_names IS NOT NULL
+            GROUP BY tool_name
+            ORDER BY uses DESC
+        """,
+    },
+    "sessions_overview": {
+        "requires": ["sessions"],
+        "sql": """
+            SELECT
+                session_id,
+                project,
+                coalesce(custom_title, summary, session_id) as title,
+                start_time,
+                end_time,
+                message_count,
+                user_message_count,
+                assistant_message_count,
+                total_input_tokens,
+                total_output_tokens,
+                total_tokens,
+                models,
+                client_version
+            FROM sessions
+            ORDER BY start_time DESC
+        """,
+    },
+    "projects_summary": {
+        "requires": ["sessions"],
+        "sql": """
+            SELECT
+                project,
+                count(*) as session_count,
+                sum(message_count) as total_messages,
+                sum(total_tokens) as total_tokens,
+                min(start_time) as first_session,
+                max(end_time) as last_session
+            FROM sessions
+            GROUP BY project
+            ORDER BY session_count DESC
+        """,
+    },
+    "daily_activity": {
+        "requires": ["sessions"],
+        "sql": """
+            SELECT
+                date(start_time) as day,
+                count(*) as sessions,
+                sum(message_count) as messages,
+                sum(total_tokens) as tokens,
+                sum(user_message_count) as user_messages,
+                sum(assistant_message_count) as assistant_messages
+            FROM sessions
+            WHERE start_time IS NOT NULL
+            GROUP BY date(start_time)
+            ORDER BY day DESC
+        """,
+    },
+    "model_usage": {
+        "requires": ["messages"],
+        "sql": """
+            SELECT
+                model,
+                count(*) as message_count,
+                count(distinct session_id) as session_count,
+                sum(input_tokens) as total_input_tokens,
+                sum(output_tokens) as total_output_tokens
+            FROM messages
+            WHERE model IS NOT NULL
+            GROUP BY model
+            ORDER BY message_count DESC
+        """,
+    },
+}
 
 
 def ensure_db_shape(db):
-    """Set up indexes, FTS, foreign keys, and views after all data is inserted."""
-    # Per-connection setting: enforces FK constraints for index_foreign_keys() below
-    db.execute("PRAGMA foreign_keys = ON")
-
-    # Indexes
+    "Set up indexes, FTS, and views after all data is inserted."
     table_names = db.table_names()
 
     if "messages" in table_names:
@@ -618,108 +655,16 @@ def ensure_db_shape(db):
         for cols in [["project"], ["start_time"]]:
             db["sessions"].create_index(cols, if_not_exists=True)
 
-    # Full-text search
-    if "messages" in table_names and "messages_fts" not in table_names:
-        db["messages"].enable_fts(
-            ["content", "thinking"],
-            create_triggers=True,
-        )
+    for table_name, fts_conf in FTS_CONFIG.items():
+        fts_table = f"{table_name}_fts"
+        if table_name in table_names and fts_table not in table_names:
+            db[table_name].enable_fts(
+                fts_conf["columns"],
+                create_triggers=fts_conf.get("create_triggers", True),
+            )
 
-    # Views
-    _create_views(db)
+    for view_name, view_conf in VIEWS.items():
+        if all(t in table_names for t in view_conf["requires"]):
+            db.create_view(view_name, view_conf["sql"], replace=True)
 
-    # Foreign keys
     db.index_foreign_keys()
-
-
-def _create_views(db):
-    """Create useful views for exploring the data."""
-    db.create_view(
-        "tool_usage",
-        """
-        SELECT
-            json_each.value as tool_name,
-            count(*) as uses,
-            count(distinct session_id) as sessions
-        FROM messages, json_each(messages.tool_names)
-        WHERE tool_names IS NOT NULL
-        GROUP BY tool_name
-        ORDER BY uses DESC
-        """,
-        replace=True,
-    )
-
-    db.create_view(
-        "sessions_overview",
-        """
-        SELECT
-            session_id,
-            project,
-            coalesce(custom_title, summary, session_id) as title,
-            start_time,
-            end_time,
-            message_count,
-            user_message_count,
-            assistant_message_count,
-            total_input_tokens,
-            total_output_tokens,
-            total_tokens,
-            models,
-            client_version
-        FROM sessions
-        ORDER BY start_time DESC
-        """,
-        replace=True,
-    )
-
-    db.create_view(
-        "projects_summary",
-        """
-        SELECT
-            project,
-            count(*) as session_count,
-            sum(message_count) as total_messages,
-            sum(total_tokens) as total_tokens,
-            min(start_time) as first_session,
-            max(end_time) as last_session
-        FROM sessions
-        GROUP BY project
-        ORDER BY session_count DESC
-        """,
-        replace=True,
-    )
-
-    db.create_view(
-        "daily_activity",
-        """
-        SELECT
-            date(start_time) as day,
-            count(*) as sessions,
-            sum(message_count) as messages,
-            sum(total_tokens) as tokens,
-            sum(user_message_count) as user_messages,
-            sum(assistant_message_count) as assistant_messages
-        FROM sessions
-        WHERE start_time IS NOT NULL
-        GROUP BY date(start_time)
-        ORDER BY day DESC
-        """,
-        replace=True,
-    )
-
-    db.create_view(
-        "model_usage",
-        """
-        SELECT
-            model,
-            count(*) as message_count,
-            count(distinct session_id) as session_count,
-            sum(input_tokens) as total_input_tokens,
-            sum(output_tokens) as total_output_tokens
-        FROM messages
-        WHERE model IS NOT NULL
-        GROUP BY model
-        ORDER BY message_count DESC
-        """,
-        replace=True,
-    )

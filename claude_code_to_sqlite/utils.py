@@ -77,7 +77,7 @@ def load_session_file(filepath):
     filepath = Path(filepath)
 
     if filepath.suffix == ".json":
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             data = json.load(f)
         if isinstance(data, dict) and "loglines" in data:
             return data["loglines"], []
@@ -88,7 +88,7 @@ def load_session_file(filepath):
     # JSONL format (CLI sessions)
     records = []
     warnings = []
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:

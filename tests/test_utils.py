@@ -896,3 +896,49 @@ class TestCLICommands:
         assert result.exit_code == 0
         assert "1 sessions" in result.output
         assert not Path(db_path).exists()
+
+    def test_sessions_limit(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        for i in range(3):
+            d = tmp_dir / f"project{i}"
+            d.mkdir()
+            make_cli_session(d, session_id=f"session-{i}")
+
+        db_path = str(tmp_dir / "test.db")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["sessions", db_path, str(tmp_dir), "--limit", "2"]
+        )
+        assert result.exit_code == 0
+        db = sqlite_utils.Database(db_path)
+        assert db["sessions"].count == 2
+
+    def test_sessions_limit_zero(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        make_cli_session(tmp_dir)
+        db_path = str(tmp_dir / "test.db")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["sessions", db_path, str(tmp_dir), "--limit", "0"]
+        )
+        assert result.exit_code != 0
+        assert "No session files" in result.output
+
+    def test_sessions_silent(self, tmp_dir):
+        from click.testing import CliRunner
+        from claude_code_to_sqlite.cli import cli
+
+        make_cli_session(tmp_dir)
+        db_path = str(tmp_dir / "test.db")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["sessions", db_path, str(tmp_dir), "--silent"]
+        )
+        assert result.exit_code == 0
+        assert result.output == ""
+        db = sqlite_utils.Database(db_path)
+        assert db["sessions"].count == 1

@@ -75,6 +75,8 @@ def _extract_records_from_bad_line(line):
 def load_session_file(filepath):
     "Load a session file (JSONL or JSON) and return (records, warnings)."
     filepath = Path(filepath)
+    if ".." in str(filepath):
+        raise Exception("Invalid file path")
 
     if filepath.suffix == ".json":
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
